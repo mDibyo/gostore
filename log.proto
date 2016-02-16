@@ -1,0 +1,29 @@
+syntax = "proto2";
+package log;
+
+
+// A single entry in the log
+message LogEntry {
+    enum LogEntryType {
+        BEGIN = 0;
+        UPDATE = 1; // insert/update/delete key
+        COMMIT = 2;
+        ABORT = 3;
+        END = 4;
+        UNDO = 5; // undo insert/update/delete key
+    }
+
+    required int64 lsn = 1; // log sequence number
+    required int64 tid = 2; // transaction id
+    required LogEntryType entry_type = 3;
+    optional string key = 4; // key to update (only UPDATE, UNDO)
+    optional bytes old_value = 5; // old value (only UPDATE, UNDO)
+    optional bytes new_value = 6; // new value (only UPDATE, UNDO)
+    optional int64 undo_lsn = 7; // the lsn being undone (only UNDO)
+}
+
+
+
+message Log {
+    repeated LogEntry log_entry = 1;
+}
