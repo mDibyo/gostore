@@ -23,7 +23,6 @@ message LogEntry {
 }
 
 
-
 message Log {
     repeated LogEntry log_entry = 1;
 }
