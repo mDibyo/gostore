@@ -1,19 +1,19 @@
-.PHONY: all clean
+.PHONY: all pb clean
 
-PROTOC = protoc
-PROTOCFLAGS = --go_out=./
+PB_DIR = ./pb
 
 GO = go
+GO_SOURCES = storemap.go
 
-all: go
+all: pb go
 
-protobuf: log.proto
-	${PROTOC} ${PROTOCFLAGS} log.proto
+pb:
+	$(MAKE) -C ${PB_DIR} pb
 
-go: storemap.go protobuf
+go:
 	${GO} fmt .
 	${GO} install .
 
 clean:
-	rm -rf *.pb.go
+	$(MAKE)	-C ${PB_DIR} clean
 

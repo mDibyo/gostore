@@ -1,5 +1,5 @@
 syntax = "proto2";
-package gostore;
+package gostore.pb;
 
 
 // A single entry in the log
@@ -24,5 +24,5 @@ message LogEntry {
 
 
 message Log {
-    repeated LogEntry log_entry = 1;
+    repeated LogEntry entry = 1;
 }
