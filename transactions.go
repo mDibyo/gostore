@@ -3,8 +3,13 @@ package gostore
 // TransactionID is used to uniquely identify/represent a transaction
 type TransactionID int64
 
+var nextTid TransactionID = 0
+
 // New Transaction creates a new transaction and returns its TransactionID.
 func NewTransaction() (tid TransactionID) {
+	tid = nextTid
+	lm.beginTransaction(tid)
+	nextTid++
 	return
 }
 
