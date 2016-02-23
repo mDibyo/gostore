@@ -15,7 +15,7 @@ func NewTransaction() (tid TransactionID) {
 
 // Commit commits and ends the transaction with this TransactionID.
 func (tid TransactionID) Commit() (err error) {
-	return
+	return lm.commitTransaction(tid)
 }
 
 // Commit aborts and ends the transaction with this TransactionID.
