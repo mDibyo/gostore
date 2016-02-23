@@ -15,7 +15,7 @@ type valueAccessor struct {
 	isWAccessor bool
 }
 
-func getRAccessor(smv StoreMapValue) *valueAccessor {
+func getRAccessor(smv storeMapValue) *valueAccessor {
 	select {
 	case smv.ping <- struct{}{}:
 	default:
@@ -24,7 +24,7 @@ func getRAccessor(smv StoreMapValue) *valueAccessor {
 	return <-smv.rAccessorChan
 }
 
-func getWAccessor(smv StoreMapValue) *valueAccessor {
+func getWAccessor(smv storeMapValue) *valueAccessor {
 	select {
 	case smv.ping <- struct{}{}:
 	default:
@@ -33,7 +33,7 @@ func getWAccessor(smv StoreMapValue) *valueAccessor {
 	return <-smv.wAccessorChan
 }
 
-func (va *valueAccessor) promoteToWAccessor(smv StoreMapValue) *valueAccessor {
+func (va *valueAccessor) promoteToWAccessor(smv storeMapValue) *valueAccessor {
 	if va.isWAccessor {
 		return va
 	}
@@ -41,7 +41,7 @@ func (va *valueAccessor) promoteToWAccessor(smv StoreMapValue) *valueAccessor {
 	return getWAccessor(smv)
 }
 
-func connectAccessor(va *valueAccessor, smv StoreMapValue, connDone chan bool) {
+func connectAccessor(va *valueAccessor, smv storeMapValue, connDone chan bool) {
 	v := smv.value
 	for {
 		select {
@@ -68,7 +68,7 @@ var accessorTimeout = time.Minute * 10
 // initializeAccessorChan for a StoreMapValue starts up a goroutine that regulates
 // the provision of read and write accessors to the StoreMapValue. Essentially, it
 // behaves like a RWMutex.
-func initializeAccessorChan(smv StoreMapValue) {
+func initializeAccessorChan(smv storeMapValue) {
 	go func() {
 		numReaders := 0
 		connDone := make(chan bool)
