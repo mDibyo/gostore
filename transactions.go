@@ -25,17 +25,17 @@ func (tid TransactionID) Abort() {
 
 // Get retrieves the value of a key in transaction with this TransactionID.
 func (tid TransactionID) Get(key Key) (value Value, err error) {
-	return
+	return lm.getValue(tid, key)
 }
 
 // Set sets the value of a key in transaction with this TransactionID.
 func (tid TransactionID) Set(key Key, value Value) (err error) {
-	return
+	return lm.setValue(tid, key, value)
 }
 
 // Delete deletes a key in transaction with this TransactionID.
 func (tid TransactionID) Delete(key Key) (err error) {
-	return
+	return lm.deleteValue(tid, key)
 }
 
 // Get retrieves the value of a key in a new single-operation transaction.
