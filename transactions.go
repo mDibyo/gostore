@@ -8,34 +8,34 @@ var nextTid TransactionID = 0
 // New Transaction creates a new transaction and returns its TransactionID.
 func NewTransaction() (tid TransactionID) {
 	tid = nextTid
-	lm.beginTransaction(tid)
+	lmInstance.beginTransaction(tid)
 	nextTid++
 	return
 }
 
 // Commit commits and ends the transaction with this TransactionID.
 func (tid TransactionID) Commit() (err error) {
-	return lm.commitTransaction(tid)
+	return lmInstance.commitTransaction(tid)
 }
 
 // Commit aborts and ends the transaction with this TransactionID.
 func (tid TransactionID) Abort() (err error) {
-	return lm.abortTransaction(tid)
+	return lmInstance.abortTransaction(tid)
 }
 
 // Get retrieves the value of a key in transaction with this TransactionID.
 func (tid TransactionID) Get(key Key) (value Value, err error) {
-	return lm.getValue(tid, key)
+	return lmInstance.getValue(tid, key)
 }
 
 // Set sets the value of a key in transaction with this TransactionID.
 func (tid TransactionID) Set(key Key, value Value) (err error) {
-	return lm.setValue(tid, key, value)
+	return lmInstance.setValue(tid, key, value)
 }
 
 // Delete deletes a key in transaction with this TransactionID.
 func (tid TransactionID) Delete(key Key) (err error) {
-	return lm.deleteValue(tid, key)
+	return lmInstance.deleteValue(tid, key)
 }
 
 // Get retrieves the value of a key in a new single-operation transaction.
