@@ -19,8 +19,8 @@ func (tid TransactionID) Commit() (err error) {
 }
 
 // Commit aborts and ends the transaction with this TransactionID.
-func (tid TransactionID) Abort() {
-	return
+func (tid TransactionID) Abort() (err error) {
+	return lm.abortTransaction(tid)
 }
 
 // Get retrieves the value of a key in transaction with this TransactionID.

@@ -46,8 +46,8 @@ type rwMutexWrapper struct {
 	wAllowed bool           // Whether writes are allowed.
 }
 
-func wrapRWMutex(smv *storeMapValue) rwMutexWrapper {
-	return rwMutexWrapper{smv: smv}
+func wrapRWMutex(smv *storeMapValue) *rwMutexWrapper {
+	return &rwMutexWrapper{smv: smv}
 }
 
 func (rw *rwMutexWrapper) rLock() {
@@ -140,33 +140,40 @@ func (rw *rwMutexWrapper) unlock() {
 
 type logSequenceNumber int64
 
-type currentMutexesMap map[Key]rwMutexWrapper
+type currentMutexesMap map[Key]*rwMutexWrapper
 
 type logManager struct {
 	log            pb.Log                              // the log of transaction operations
+	logLock        sync.Mutex                          // lock to synchronize access to the log
 	nextLSN        logSequenceNumber                   // the LSN for the next log entry
 	nextLSNToFlush logSequenceNumber                   // the LSN of the next log entry to be flushed
 	currMutexes    map[TransactionID]currentMutexesMap // the mutexes held currently by running transactions
-	storeMap       map[Key]*storeMapValue
+	storeMap       map[Key]*storeMapValue              // the master copy of the current state of the store
 }
 
-func (cm *currentMutexesMap) getWrappedRWMutex(k Key, smv *storeMapValue) *rwMutexWrapper {
+func (cm currentMutexesMap) getWrappedRWMutex(k Key, smv *storeMapValue) *rwMutexWrapper {
 	rw, ok := cm[k]
 	if !ok {
 		rw = wrapRWMutex(smv)
 		cm[k] = rw
 	}
-	return &rw
+	return rw
 }
 
 func (lm *logManager) addLogEntry(e *pb.LogEntry) {
+	lm.logLock.Lock()
+	defer lm.logLock.Unlock()
+
 	entries := &lm.log.Entry
 	e.Lsn = proto.Int64(int64(lm.nextLSN))
 	*entries = append(*entries, e)
 	lm.nextLSN++
 }
 
-func (lm *logManager) flushLog() (err error) {
+func (lm *logManager) flushLog() {
+	lm.logLock.Lock()
+	defer lm.logLock.Unlock()
+
 	entries := lm.log.GetEntry()
 	logToFlush := &pb.Log{
 		Entry: entries[lm.nextLSNToFlush:],
@@ -276,12 +283,7 @@ func (lm *logManager) commitTransaction(tid TransactionID) (err error) {
 		err = fmt.Errorf("transaction with ID %d is not currently running", tid)
 	}
 
-	// Unlock all locks
-	for _, rw := range cm {
-		rw.unlock()
-	}
-
-	// Write out log entries
+	// Write out COMMIT and END log entries
 	lm.addLogEntry(&pb.LogEntry{
 		Tid:       proto.Int64(int64(tid)),
 		EntryType: pb.LogEntry_COMMIT.Enum(),
@@ -293,14 +295,76 @@ func (lm *logManager) commitTransaction(tid TransactionID) (err error) {
 	})
 
 	// Flush out log
-	err = lm.flushLog()
+	lm.flushLog()
+
+	// Release all locks and remove from current transactions
+	for _, rw := range cm {
+		rw.unlock()
+	}
+	delete(lm.currMutexes, tid)
+	return
+}
+
+func (lm *logManager) abortTransaction(tid TransactionID) (err error) {
+	cm, ok := lm.currMutexes[tid]
+	if !ok {
+		err = fmt.Errorf("transaction with ID %d is not currently running", tid)
+	}
+
+	// Write out ABORT entry
+	lm.addLogEntry(&pb.LogEntry{
+		Tid:       proto.Int64(int64(tid)),
+		EntryType: pb.LogEntry_ABORT.Enum(),
+	})
+
+	// Undo updates (and write log entries)
+
+	entries := &lm.log.Entry
+	iterateEntries := (*entries)[:]
+iterate:
+	for i := len(iterateEntries) - 1; i >= 0; i-- {
+		e := iterateEntries[i]
+		if *e.Tid == int64(tid) {
+			switch *e.EntryType {
+			case pb.LogEntry_UPDATE: // Undo UPDATE records
+				k := Key(*e.Key)
+				smv, _ := lm.storeMap[k]
+				rw := cm.getWrappedRWMutex(k, smv)
+				rw.wLock()
+				smv.value = CopyByteArray(e.OldValue)
+				lm.addLogEntry(&pb.LogEntry{
+					Tid:       proto.Int64(int64(tid)),
+					EntryType: pb.LogEntry_UNDO.Enum(),
+					Key:       e.Key,
+					OldValue:  e.NewValue,
+					NewValue:  e.OldValue,
+					UndoLsn:   e.Lsn,
+				})
+			case pb.LogEntry_BEGIN: // Stop when BEGIN record is reached
+				break iterate
+			}
+		}
+	}
+
+	lm.addLogEntry(&pb.LogEntry{
+		Tid:       proto.Int64(int64(tid)),
+		EntryType: pb.LogEntry_END.Enum(),
+	})
+
+	// Flush out log
+	lm.flushLog()
+
+	// Release all locks and remove from current transactions
+	for _, rw := range cm {
+		rw.unlock()
+	}
+	delete(lm.currMutexes, tid)
 	return
 }
 
 var lm logManager
 
 func init() {
-	fmt.Println("initing gostore")
 	lm = logManager{
 		currMutexes: make(map[TransactionID]currentMutexesMap),
 		storeMap:    make(map[Key]*storeMapValue),

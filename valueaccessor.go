@@ -4,11 +4,11 @@ import (
 	"time"
 )
 
-// valueAccessor provides an interface for reading (and optionally, modifying) the
-// Value of a key-mapped StoreMapValue. Transactions can request a valueAccessor
-// through the logManager for either reading, or for reading/writing. This interface
-// exists to regulate access to the Value, specifically disallow readers when there
-// is a writer transaction, and vice-versa.
+// valueAccessor provides an alternate interface for reading (and optionally,
+// modifying) the Value of a key-mapped StoreMapValue. Transactions can request a
+// valueAccessor through the logManager for either reading, or for reading/writing.
+// This interface exists to regulate access to the Value, specifically disallow
+// readers when there is a writer transaction, and vice-versa.
 type valueAccessor struct {
 	c           chan Value
 	done        chan bool
