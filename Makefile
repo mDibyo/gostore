@@ -14,6 +14,9 @@ go:
 	${GO} fmt .
 	${GO} install .
 
+test:
+	${GO} test
+
 clean:
 	$(MAKE)	-C ${PB_DIR} clean
 
