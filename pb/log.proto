@@ -13,13 +13,20 @@ message LogEntry {
         UNDO = 5; // undo insert/update/delete key
     }
 
-    required int64 lsn = 1; // log sequence number
-    required int64 tid = 2; // transaction id
+    // log sequence number
+    required int64 lsn = 1;
+    // transaction id
+    required int64 tid = 2;
+    // entry type
     required LogEntryType entry_type = 3;
-    optional string key = 4; // key to update (only UPDATE, UNDO)
-    optional bytes old_value = 5; // old value (only UPDATE, UNDO)
-    optional bytes new_value = 6; // new value (only UPDATE, UNDO)
-    optional int64 undo_lsn = 7; // the lsn being undone (only UNDO)
+    // key to update (only UPDATE, UNDO)
+    optional string key = 4;
+    // old value (only UPDATE, UNDO)
+    optional bytes old_value = 5;
+    // new value (only UPDATE, UNDO)
+    optional bytes new_value = 6;
+    // the lsn being undone (only UNDO)
+    optional int64 undo_lsn = 7;
 }
 
 

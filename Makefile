@@ -15,7 +15,7 @@ go:
 	${GO} install .
 
 test:
-	${GO} test
+	${GO} test -v
 
 clean:
 	$(MAKE)	-C ${PB_DIR} clean

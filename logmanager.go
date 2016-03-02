@@ -40,14 +40,28 @@ func newStoreMapValue() *storeMapValue {
 
 // rwMutexWrapper is a thread-safe convenience wrapper for sync.RWMutex used in StoreMapValue.
 type rwMutexWrapper struct {
-	selfLock sync.Mutex     // Self Lock to synchronize lock and unlock operations.
-	smv      *storeMapValue // storeMapValue to which the lock belongs.
-	held     bool           // Whether the lock is held.
-	wAllowed bool           // Whether writes are allowed.
+	selfLock sync.Mutex    // Self Lock to synchronize lock and unlock operations.
+	smvLock  *sync.RWMutex // the lock being wrapped.
+	held     bool          // Whether the lock is held.
+	wAllowed bool          // Whether writes are allowed.
 }
 
-func wrapRWMutex(smv *storeMapValue) *rwMutexWrapper {
-	return &rwMutexWrapper{smv: smv}
+func wrapRWMutex(l *sync.RWMutex) rwMutexWrapper {
+	return rwMutexWrapper{smvLock: l}
+}
+
+func (rw *rwMutexWrapper) rLocked() (b bool) {
+	rw.selfLock.Lock()
+	b = rw.held && !rw.wAllowed
+	rw.selfLock.Unlock()
+	return
+}
+
+func (rw *rwMutexWrapper) wLocked() (b bool) {
+	rw.selfLock.Lock()
+	b = rw.held && rw.wAllowed
+	rw.selfLock.Unlock()
+	return
 }
 
 func (rw *rwMutexWrapper) rLock() {
@@ -61,7 +75,7 @@ func (rw *rwMutexWrapper) rLock() {
 }
 
 func (rw *rwMutexWrapper) rLockUnsafe() {
-	rw.smv.lock.RLock()
+	rw.smvLock.RLock()
 	rw.held = true
 }
 
@@ -76,7 +90,7 @@ func (rw *rwMutexWrapper) rUnlock() {
 }
 
 func (rw *rwMutexWrapper) rUnlockUnsafe() {
-	rw.smv.lock.RUnlock()
+	rw.smvLock.RUnlock()
 	rw.held = false
 }
 
@@ -91,7 +105,7 @@ func (rw *rwMutexWrapper) wLock() {
 }
 
 func (rw *rwMutexWrapper) wLockUnsafe() {
-	rw.smv.lock.Lock()
+	rw.smvLock.Lock()
 	rw.held = true
 	rw.wAllowed = true
 }
@@ -107,7 +121,7 @@ func (rw *rwMutexWrapper) wUnlock() {
 }
 
 func (rw *rwMutexWrapper) wUnlockUnsafe() {
-	rw.smv.lock.Unlock()
+	rw.smvLock.Unlock()
 	rw.held = false
 	rw.wAllowed = false
 }
@@ -151,18 +165,20 @@ type logManager struct {
 	storeMap       map[Key]*storeMapValue              // the master copy of the current state of the store
 }
 
-func (cm currentMutexesMap) getWrappedRWMutex(k Key) (rw *rwMutexWrapper, err error) {
-	rw, ok := cm[k]
-	if !ok {
-		smv, ok := lmInstance.storeMap[k]
-		if !ok {
-			err = fmt.Errorf("key %s does not exist", k)
-			return
-		}
-		rw = wrapRWMutex(smv)
-		cm[k] = rw
+func newLogManager() *logManager {
+	return &logManager{
+		currMutexes: make(map[TransactionID]currentMutexesMap),
+		storeMap:    make(map[Key]*storeMapValue),
 	}
-	return
+}
+
+func (cm currentMutexesMap) getWrappedRWMutex(k Key, smv *storeMapValue) *rwMutexWrapper {
+	if rw, ok := cm[k]; ok {
+		return rw
+	}
+	_rw := wrapRWMutex(&smv.lock)
+	cm[k] = &_rw
+	return &_rw
 }
 
 func (lm *logManager) addLogEntry(e *pb.LogEntry) {
@@ -202,13 +218,15 @@ func (lm *logManager) getValue(tid TransactionID, k Key) (v Value, err error) {
 		err = fmt.Errorf("transaction with ID %d is not currently running", tid)
 		return
 	}
-
-	rw, err := cm.getWrappedRWMutex(k)
-	if err != nil {
+	smv, ok := lm.storeMap[k]
+	if !ok {
+		err = fmt.Errorf("key %s does not exist", k)
 		return
 	}
+
+	rw := cm.getWrappedRWMutex(k, smv)
 	rw.rLock()
-	v = rw.smv.value
+	v = smv.value
 	return
 }
 
@@ -222,19 +240,22 @@ func (lm *logManager) setValue(tid TransactionID, k Key, v Value) (err error) {
 		err = fmt.Errorf("value is nil")
 		return
 	}
+	// Add key if it does not exist
+	smv, ok := lm.storeMap[k]
+	if !ok {
+		smv = newStoreMapValue()
+		lm.storeMap[k] = smv
+	}
 
 	// Update value
-	rw, err := cm.getWrappedRWMutex(k)
-	if err != nil {
-		return
-	}
+	rw := cm.getWrappedRWMutex(k, smv)
 	rw.wLock()
 	var oldValue []byte
-	if rw.smv.value != nil {
-		oldValue = CopyByteArray(rw.smv.value)
+	if smv.value != nil {
+		oldValue = CopyByteArray(smv.value)
 	}
 	newValue := CopyByteArray(v)
-	rw.smv.value = v
+	smv.value = v
 
 	// Write log entry
 	lm.addLogEntry(&pb.LogEntry{
@@ -254,14 +275,16 @@ func (lm *logManager) deleteValue(tid TransactionID, k Key) (err error) {
 		err = fmt.Errorf("transaction with ID %d is not currently running", tid)
 		return
 	}
-
-	// Delete key
-	rw, err := cm.getWrappedRWMutex(k)
-	if err != nil {
+	smv, ok := lmInstance.storeMap[k]
+	if !ok {
+		err = fmt.Errorf("key %s does not exist", k)
 		return
 	}
+
+	// Delete key
+	rw := cm.getWrappedRWMutex(k, smv)
 	rw.wLock()
-	oldValue := CopyByteArray(rw.smv.value)
+	oldValue := CopyByteArray(smv.value)
 	var newValue []byte
 	delete(lm.storeMap, k)
 
@@ -330,13 +353,16 @@ iterate:
 			switch *e.EntryType {
 			case pb.LogEntry_UPDATE: // Undo UPDATE records
 				k := Key(*e.Key)
-				//smv, _ := lm.storeMap[k]
-				rw, err := cm.getWrappedRWMutex(k)
+				smv, ok := lm.storeMap[k]
+				if !ok {
+					return fmt.Errorf("key %s does not exist.", k)
+				}
+				rw := cm.getWrappedRWMutex(k, smv)
 				if err != nil {
 					return err
 				}
 				rw.wLock()
-				rw.smv.value = CopyByteArray(e.OldValue)
+				smv.value = CopyByteArray(e.OldValue)
 				lm.addLogEntry(&pb.LogEntry{
 					Tid:       proto.Int64(int64(tid)),
 					EntryType: pb.LogEntry_UNDO.Enum(),
@@ -370,8 +396,5 @@ iterate:
 var lmInstance logManager
 
 func init() {
-	lmInstance = logManager{
-		currMutexes: make(map[TransactionID]currentMutexesMap),
-		storeMap:    make(map[Key]*storeMapValue),
-	}
+	lmInstance = *newLogManager()
 }
