@@ -275,7 +275,7 @@ func (lm *logManager) deleteValue(tid TransactionID, k Key) (err error) {
 		err = fmt.Errorf("transaction with ID %d is not currently running", tid)
 		return
 	}
-	smv, ok := lmInstance.storeMap[k]
+	smv, ok := lm.storeMap[k]
 	if !ok {
 		err = fmt.Errorf("key %s does not exist", k)
 		return

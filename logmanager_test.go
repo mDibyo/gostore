@@ -8,6 +8,7 @@ import (
 	"testing"
 )
 
+// Variables used in tests
 var (
 	sampleKey1   = Key("key_1")
 	sampleKey2   = Key("key_2")
@@ -86,6 +87,7 @@ func TestGetValue(t *testing.T) {
 	smv := newStoreMapValue()
 	smv.value = sampleValue1
 	lm.storeMap[sampleKey1] = smv
+
 	tid := NewTransaction()
 	lm.beginTransaction(tid)
 	wantLenLogAfter := len(lm.log.Entry)
@@ -94,6 +96,9 @@ func TestGetValue(t *testing.T) {
 		t.Errorf("got an error while trying to get value: %v", err)
 	} else if !bytes.Equal(gotV, sampleValue1) {
 		t.Errorf("did not get back the correct value. expected=%v, actual=%v.", sampleValue1, gotV)
+	}
+	if _, err := lm.getValue(tid, sampleKey2); err == nil {
+		t.Errorf("did not get an error while trying to get value for non-existent key", err)
 	}
 	// Check log
 	if gotLenLogAfter := len(lm.log.Entry); gotLenLogAfter != wantLenLogAfter {
@@ -158,7 +163,7 @@ func TestSetValue(t *testing.T) {
 		wantLogLenAfter := lenLogBefore + 1
 		gotLenLogAfter := len(lm.log.Entry)
 		if gotLenLogAfter != wantLogLenAfter {
-			t.Fatalf("did not get expected log length. expected=%d, actual=%d.", wantLogLenAfter, gotLenLogAfter)
+			t.Errorf("did not get expected log length. expected=%d, actual=%d.", wantLogLenAfter, gotLenLogAfter)
 		}
 		gotEntry := lm.log.Entry[gotLenLogAfter-1]
 		wantEntry := test.wantLogEntry
@@ -172,6 +177,124 @@ func TestSetValue(t *testing.T) {
 			t.Errorf("did not find mutex for key='%s' in mutex map for transaction.", test.key)
 		} else if !rw.wLocked() {
 			t.Errorf("found that mutex for key='%s' was not write locked. mutex: %+v", test.key, rw)
+		}
+	}
+}
+
+func TestDeleteValue(t *testing.T) {
+	lm := newLogManager()
+	smv := newStoreMapValue()
+	smv.value = sampleValue1
+	lm.storeMap[sampleKey1] = smv
+
+	tid := NewTransaction()
+	lm.beginTransaction(tid)
+	lenLogBefore := len(lm.log.Entry)
+	// Check delete operation
+	if err := lm.deleteValue(tid, sampleKey1); err != nil {
+		t.Errorf("got an error while trying to delete value: %v", err)
+	}
+	if err := lm.deleteValue(tid, sampleKey2); err == nil {
+		t.Errorf("did not get expected error when deleting non-existant key")
+	}
+	// Check storeMap
+	if _, ok := lm.storeMap[sampleKey1]; ok {
+		t.Errorf("found value for key after deletion in storeMap.", sampleKey1)
+	}
+	// Check log
+	wantLenLogAfter := lenLogBefore + 1
+	gotLenLogAfter := len(lm.log.Entry)
+	if gotLenLogAfter != wantLenLogAfter {
+		t.Errorf("did not get expected log length. expected=%d, actual=%d.", wantLenLogAfter, gotLenLogAfter)
+	}
+	gotEntry := lm.log.Entry[gotLenLogAfter-1]
+	wantEntry := &pb.LogEntry{
+		Lsn:       gotEntry.Lsn,
+		Tid:       proto.Int64(int64(tid)),
+		EntryType: pb.LogEntry_UPDATE.Enum(),
+		Key:       proto.String(string(sampleKey1)),
+		OldValue:  sampleValue1,
+	}
+	testLogEntry(t, gotEntry, wantEntry)
+	// Check currMutexes
+	if cm, ok := lm.currMutexes[tid]; !ok {
+		t.Error("did not find transaction in current mutexes map as expected.")
+	} else if rw, ok := cm[sampleKey1]; !ok {
+		t.Error("did not find mutex for key in mutex map for transaction.")
+	} else if !rw.wLocked() {
+		t.Errorf("found that mutex was not write locked. mutex: %+v", rw)
+	}
+}
+
+func TestCommitTransaction(t *testing.T) {
+	tests := []struct {
+		key            Key
+		value          Value
+		wantNumEntries int
+	}{
+		{
+			wantNumEntries: 3,
+		},
+		{
+			key:            sampleKey1,
+			wantNumEntries: 3,
+		},
+		{
+			key:            sampleKey2,
+			value:          sampleValue2,
+			wantNumEntries: 4,
+		},
+	}
+
+	lm := newLogManager()
+	smv := newStoreMapValue()
+	smv.value = sampleValue1
+	lm.storeMap[sampleKey1] = smv
+	for _, test := range tests {
+		lenLogBefore := len(lm.log.Entry)
+		tid := NewTransaction()
+		lm.beginTransaction(tid)
+		if test.key != "" {
+			var err error
+			if test.value != nil {
+				err = lm.setValue(tid, test.key, test.value)
+			} else {
+				_, err = lm.getValue(tid, test.key)
+			}
+			if err != nil {
+				t.Errorf("got an error while getting/setting value for key='%s': %v", test.key, err)
+			}
+		}
+		// Check commit operation
+		if err := lm.commitTransaction(tid); err != nil {
+			t.Errorf("got an error while trying to commit transaction: %v", err)
+		}
+		// Check log
+		wantLenLogAfter := lenLogBefore + test.wantNumEntries
+		gotLenLogAfter := len(lm.log.Entry)
+		if gotLenLogAfter != wantLenLogAfter {
+			t.Errorf("did not get expected log length. expected=%d, actual=%d.", wantLenLogAfter, gotLenLogAfter)
+		}
+		gotLogEntry := lm.log.Entry[gotLenLogAfter-2]
+		wantLogEntry := &pb.LogEntry{
+			Lsn:       gotLogEntry.Lsn,
+			Tid:       proto.Int64(int64(tid)),
+			EntryType: pb.LogEntry_COMMIT.Enum(),
+		}
+		testLogEntry(t, gotLogEntry, wantLogEntry)
+		gotLogEntry = lm.log.Entry[gotLenLogAfter-1]
+		wantLogEntry = &pb.LogEntry{
+			Lsn:       gotLogEntry.Lsn,
+			Tid:       proto.Int64(int64(tid)),
+			EntryType: pb.LogEntry_END.Enum(),
+		}
+		testLogEntry(t, gotLogEntry, wantLogEntry)
+		if lm.nextLSNToFlush != lm.nextLSN {
+			t.Error("found that log was not flushed.")
+		}
+		// Check currMutexes
+		if _, ok := lm.currMutexes[tid]; ok {
+			t.Error("found transaction in current mutexes map.")
 		}
 	}
 }
