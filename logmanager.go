@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"github.com/golang/protobuf/proto"
 	pb "github.com/mDibyo/gostore/pb"
+	"io/ioutil"
 	"sync"
 )
 
@@ -158,6 +159,7 @@ type currentMutexesMap map[Key]*rwMutexWrapper
 
 type logManager struct {
 	log            pb.Log                              // the log of transaction operations
+	logDir         string                              // directory in which log is stored
 	logLock        sync.Mutex                          // lock to synchronize access to the log
 	nextLSN        logSequenceNumber                   // the LSN for the next log entry
 	nextLSNToFlush logSequenceNumber                   // the LSN of the next log entry to be flushed
@@ -165,8 +167,12 @@ type logManager struct {
 	storeMap       map[Key]*storeMapValue              // the master copy of the current state of the store
 }
 
-func newLogManager() *logManager {
+func newLogManager(ld string) *logManager {
+	if ld == "" {
+		ld = "./data"
+	}
 	return &logManager{
+		logDir:      ld,
 		currMutexes: make(map[TransactionID]currentMutexesMap),
 		storeMap:    make(map[Key]*storeMapValue),
 	}
@@ -191,7 +197,7 @@ func (lm *logManager) addLogEntry(e *pb.LogEntry) {
 	lm.nextLSN++
 }
 
-func (lm *logManager) flushLog() {
+func (lm *logManager) flushLog() error {
 	lm.logLock.Lock()
 	defer lm.logLock.Unlock()
 
@@ -199,9 +205,16 @@ func (lm *logManager) flushLog() {
 	logToFlush := &pb.Log{
 		Entry: entries[lm.nextLSNToFlush:],
 	}
-	fmt.Printf("logToFlush: (%+v)\n", logToFlush)
+	data, err := proto.Marshal(logToFlush)
+	if err != nil {
+		return fmt.Errorf("error while marshalling log to be flushed: %v", err)
+	}
+	filename := fmt.Sprintf("%s/%d_%d.log", lm.logDir, lm.nextLSNToFlush, lm.nextLSN-1)
+	if err := ioutil.WriteFile(filename, data, 0644); err != nil {
+		return fmt.Errorf("error while writing out log: %v", err)
+	}
 	lm.nextLSNToFlush = lm.nextLSN
-	return
+	return nil
 }
 
 func (lm *logManager) beginTransaction(tid TransactionID) {
@@ -300,11 +313,10 @@ func (lm *logManager) deleteValue(tid TransactionID, k Key) (err error) {
 	return
 }
 
-func (lm *logManager) commitTransaction(tid TransactionID) (err error) {
+func (lm *logManager) commitTransaction(tid TransactionID) error {
 	cm, ok := lm.currMutexes[tid]
 	if !ok {
-		err = fmt.Errorf("transaction with ID %d is not currently running", tid)
-		return
+		return fmt.Errorf("transaction with ID %d is not currently running", tid)
 	}
 
 	// Write out COMMIT and END log entries
@@ -319,14 +331,16 @@ func (lm *logManager) commitTransaction(tid TransactionID) (err error) {
 	})
 
 	// Flush out log
-	lm.flushLog()
+	if err := lm.flushLog(); err != nil {
+		return fmt.Errorf("error while flushing log: %v", err)
+	}
 
 	// Release all locks and remove from current transactions
 	for _, rw := range cm {
 		rw.unlock()
 	}
 	delete(lm.currMutexes, tid)
-	return
+	return nil
 }
 
 func (lm *logManager) abortTransaction(tid TransactionID) (err error) {
@@ -396,5 +410,5 @@ iterate:
 var lmInstance logManager
 
 func init() {
-	lmInstance = *newLogManager()
+	lmInstance = *newLogManager("")
 }

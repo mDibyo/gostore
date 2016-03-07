@@ -2,20 +2,41 @@ package gostore
 
 import (
 	"bytes"
+	"fmt"
 	"github.com/golang/protobuf/proto"
 	pb "github.com/mDibyo/gostore/pb"
+	"io/ioutil"
+	"os"
 	"reflect"
 	"testing"
 )
 
 // Variables used in tests
 var (
+	// Store keys and values
 	sampleKey1   = Key("key_1")
 	sampleKey2   = Key("key_2")
 	sampleValue1 = Value([]byte{0, 1, 2, 3, 4})
 	sampleValue2 = Value([]byte{1, 2, 3, 4, 5})
 	sampleValue3 = Value([]byte{2, 3, 4, 5, 6})
+
+	// Miscellaneous
+	testLogDir string
 )
+
+func init() {
+	var err error
+	testLogDir, err = ioutil.TempDir("", "gostore_logs_")
+	if err != nil {
+		panic(fmt.Errorf("could not create temporary directory for tests: %v", err))
+	}
+}
+
+func TestMain(m *testing.M) {
+	errcode := m.Run()
+	os.RemoveAll(testLogDir)
+	os.Exit(errcode)
+}
 
 func testLogEntry(t *testing.T, gotEntry, wantEntry *pb.LogEntry) {
 	if !reflect.DeepEqual(gotEntry, wantEntry) {
@@ -45,7 +66,7 @@ func TestAddLogEntry(t *testing.T) {
 		},
 	}
 
-	lm := *newLogManager()
+	lm := *newLogManager(testLogDir)
 	lm.nextLSN = nextLSN
 	for _, test := range tests {
 		lm.addLogEntry(&pb.LogEntry{
@@ -62,7 +83,7 @@ func TestAddLogEntry(t *testing.T) {
 }
 
 func TestBeginTransaction(t *testing.T) {
-	lm := *newLogManager()
+	lm := *newLogManager(testLogDir)
 	tid := NewTransaction()
 	lm.beginTransaction(tid)
 	wantLogEntry := &pb.LogEntry{
@@ -83,7 +104,7 @@ func TestBeginTransaction(t *testing.T) {
 }
 
 func TestGetValue(t *testing.T) {
-	lm := *newLogManager()
+	lm := *newLogManager(testLogDir)
 	smv := newStoreMapValue()
 	smv.value = sampleValue1
 	lm.storeMap[sampleKey1] = smv
@@ -141,7 +162,7 @@ func TestSetValue(t *testing.T) {
 		},
 	}
 
-	lm := newLogManager()
+	lm := newLogManager(testLogDir)
 	smv := newStoreMapValue()
 	smv.value = sampleValue3
 	lm.storeMap[sampleKey2] = smv
@@ -182,7 +203,7 @@ func TestSetValue(t *testing.T) {
 }
 
 func TestDeleteValue(t *testing.T) {
-	lm := newLogManager()
+	lm := newLogManager(testLogDir)
 	smv := newStoreMapValue()
 	smv.value = sampleValue1
 	lm.storeMap[sampleKey1] = smv
@@ -246,7 +267,7 @@ func TestCommitTransaction(t *testing.T) {
 		},
 	}
 
-	lm := newLogManager()
+	lm := newLogManager(testLogDir)
 	smv := newStoreMapValue()
 	smv.value = sampleValue1
 	lm.storeMap[sampleKey1] = smv

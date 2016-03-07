@@ -50,3 +50,6 @@ crashlytics-build.properties
 
 ### Protocol buffers
 *.pb.go
+
+# log files
+data/*.log
