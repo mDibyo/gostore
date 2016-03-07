@@ -157,7 +157,32 @@ func (rw *rwMutexWrapper) unlock() {
 // TransactionID is used to uniquely identify/represent a transaction.
 type TransactionID int64
 
+type storeMap map[Key]*storeMapValue
+
+func (sm storeMap) storeMapValue(k Key, createIfNotExist bool) (smv *storeMapValue, err error) {
+	smv, ok := sm[k]
+	if ok {
+		return
+	}
+	if !createIfNotExist {
+		return smv, fmt.Errorf("key %s does not exist.", k)
+	}
+
+	smv = newStoreMapValue()
+	sm[k] = smv
+	return
+}
+
 type currentMutexesMap map[Key]*rwMutexWrapper
+
+func (cm currentMutexesMap) getWrappedRWMutex(k Key, smv *storeMapValue) *rwMutexWrapper {
+	if rw, ok := cm[k]; ok {
+		return rw
+	}
+	_rw := wrapRWMutex(&smv.lock)
+	cm[k] = &_rw
+	return &_rw
+}
 
 var logFileFmt = "%012d_%012d.log"
 
@@ -169,7 +194,7 @@ type logManager struct {
 	nextLSNToFlush int                                 // the LSN of the next log entry to be flushed
 	nextTID        TransactionID                       // the Transaction ID for the next transaction
 	currMutexes    map[TransactionID]currentMutexesMap // the mutexes held currently by running transactions
-	storeMap       map[Key]*storeMapValue              // the master copy of the current state of the store
+	store          storeMap                            // the master copy of the current state of the store
 }
 
 func newLogManager(ld string) (lm *logManager, err error) {
@@ -179,7 +204,7 @@ func newLogManager(ld string) (lm *logManager, err error) {
 		lm.logDir = "./data"
 	}
 	lm.currMutexes = make(map[TransactionID]currentMutexesMap)
-	lm.storeMap = make(map[Key]*storeMapValue)
+	lm.store = make(storeMap)
 
 	// Retrieve old logs if they exist and replay
 	files, err := ioutil.ReadDir(lm.logDir)
@@ -216,15 +241,6 @@ func newLogManager(ld string) (lm *logManager, err error) {
 	}
 	lm.nextLSNToFlush = lm.nextLSN
 	return
-}
-
-func (cm currentMutexesMap) getWrappedRWMutex(k Key, smv *storeMapValue) *rwMutexWrapper {
-	if rw, ok := cm[k]; ok {
-		return rw
-	}
-	_rw := wrapRWMutex(&smv.lock)
-	cm[k] = &_rw
-	return &_rw
 }
 
 func (lm *logManager) addLogEntry(e *pb.LogEntry) {
@@ -270,39 +286,33 @@ func (lm *logManager) beginTransaction(tid TransactionID) {
 	lm.currMutexes[tid] = make(currentMutexesMap)
 }
 
-func (lm *logManager) getValue(tid TransactionID, k Key) (v Value, err error) {
+func (lm *logManager) getValue(tid TransactionID, k Key) (Value, error) {
 	cm, ok := lm.currMutexes[tid]
 	if !ok {
-		err = fmt.Errorf("transaction with ID %d is not currently running", tid)
-		return
+		return nil, fmt.Errorf("transaction with ID %d is not currently running", tid)
 	}
-	smv, ok := lm.storeMap[k]
-	if !ok {
-		err = fmt.Errorf("key %s does not exist", k)
-		return
+	smv, err := lm.store.storeMapValue(k, false)
+	if err != nil {
+		return nil, fmt.Errorf("could not retrieve value: %v", err)
 	}
 
 	rw := cm.getWrappedRWMutex(k, smv)
 	rw.rLock()
-	v = smv.value
-	return
+	return smv.value, nil
 }
 
-func (lm *logManager) setValue(tid TransactionID, k Key, v Value) (err error) {
+func (lm *logManager) setValue(tid TransactionID, k Key, v Value) error {
 	cm, ok := lm.currMutexes[tid]
 	if !ok {
-		err = fmt.Errorf("transaction with ID %d is not currently running", tid)
-		return
+		return fmt.Errorf("transaction with ID %d is not currently running.", tid)
 	}
 	if v == nil {
-		err = fmt.Errorf("value is nil")
-		return
+		return fmt.Errorf("value is nil.")
 	}
 	// Add key if it does not exist
-	smv, ok := lm.storeMap[k]
-	if !ok {
-		smv = newStoreMapValue()
-		lm.storeMap[k] = smv
+	smv, err := lm.store.storeMapValue(k, true)
+	if err != nil {
+		return fmt.Errorf("could not retrieve value: %v", err)
 	}
 
 	// Update value
@@ -324,19 +334,17 @@ func (lm *logManager) setValue(tid TransactionID, k Key, v Value) (err error) {
 		NewValue:  newValue,
 	})
 
-	return
+	return nil
 }
 
-func (lm *logManager) deleteValue(tid TransactionID, k Key) (err error) {
+func (lm *logManager) deleteValue(tid TransactionID, k Key) error {
 	cm, ok := lm.currMutexes[tid]
 	if !ok {
-		err = fmt.Errorf("transaction with ID %d is not currently running", tid)
-		return
+		return fmt.Errorf("transaction with ID %d is not currently running.", tid)
 	}
-	smv, ok := lm.storeMap[k]
-	if !ok {
-		err = fmt.Errorf("key %s does not exist", k)
-		return
+	smv, err := lm.store.storeMapValue(k, false)
+	if err != nil {
+		return fmt.Errorf("could not retrieve value: %v", err)
 	}
 
 	// Delete key
@@ -344,7 +352,7 @@ func (lm *logManager) deleteValue(tid TransactionID, k Key) (err error) {
 	rw.wLock()
 	oldValue := CopyByteArray(smv.value)
 	var newValue []byte
-	delete(lm.storeMap, k)
+	delete(lm.store, k)
 
 	// Write log entry
 	lm.addLogEntry(&pb.LogEntry{
@@ -355,7 +363,7 @@ func (lm *logManager) deleteValue(tid TransactionID, k Key) (err error) {
 		NewValue:  newValue,
 	})
 
-	return
+	return nil
 }
 
 func (lm *logManager) commitTransaction(tid TransactionID) error {
@@ -412,9 +420,9 @@ iterate:
 			switch *e.EntryType {
 			case pb.LogEntry_UPDATE: // Undo UPDATE records
 				k := Key(*e.Key)
-				smv, ok := lm.storeMap[k]
-				if !ok {
-					return fmt.Errorf("key %s does not exist.", k)
+				smv, err := lm.store.storeMapValue(k, false)
+				if err != nil {
+					return fmt.Errorf("could not retrieve value: %v", err)
 				}
 				rw := cm.getWrappedRWMutex(k, smv)
 				if err != nil {

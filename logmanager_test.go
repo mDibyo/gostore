@@ -115,7 +115,7 @@ func TestGetValue(t *testing.T) {
 	lm := *newLogManagerOverride(t)
 	smv := newStoreMapValue()
 	smv.value = sampleValue1
-	lm.storeMap[sampleKey1] = smv
+	lm.store[sampleKey1] = smv
 
 	tid := lm.nextTransactionID()
 	lm.beginTransaction(tid)
@@ -173,7 +173,7 @@ func TestSetValue(t *testing.T) {
 	lm := newLogManagerOverride(t)
 	smv := newStoreMapValue()
 	smv.value = sampleValue3
-	lm.storeMap[sampleKey2] = smv
+	lm.store[sampleKey2] = smv
 	for _, test := range tests {
 		tid := lm.nextTransactionID()
 		lm.beginTransaction(tid)
@@ -183,7 +183,7 @@ func TestSetValue(t *testing.T) {
 			t.Errorf("got an error for (key='%s', value=%v) while trying to set value: %v.", test.key, test.value, err)
 		}
 		// Check storeMap
-		if gotSMV, ok := lm.storeMap[test.key]; !ok {
+		if gotSMV, ok := lm.store[test.key]; !ok {
 			t.Errorf("did not find value for key='%s' in storeMap.", test.key)
 		} else if !bytes.Equal(gotSMV.value, test.value) {
 			t.Errorf("did not get back the correct value. key='%s', expected=%v, actual=%v.", test.key, test.value, gotSMV.value)
@@ -214,7 +214,7 @@ func TestDeleteValue(t *testing.T) {
 	lm := newLogManagerOverride(t)
 	smv := newStoreMapValue()
 	smv.value = sampleValue1
-	lm.storeMap[sampleKey1] = smv
+	lm.store[sampleKey1] = smv
 
 	tid := lm.nextTransactionID()
 	lm.beginTransaction(tid)
@@ -227,7 +227,7 @@ func TestDeleteValue(t *testing.T) {
 		t.Errorf("did not get expected error when deleting non-existant key")
 	}
 	// Check storeMap
-	if _, ok := lm.storeMap[sampleKey1]; ok {
+	if _, ok := lm.store[sampleKey1]; ok {
 		t.Errorf("found value for key after deletion in storeMap.", sampleKey1)
 	}
 	// Check log
@@ -278,7 +278,7 @@ func TestCommitTransaction(t *testing.T) {
 	lm := newLogManagerOverride(t)
 	smv := newStoreMapValue()
 	smv.value = sampleValue1
-	lm.storeMap[sampleKey1] = smv
+	lm.store[sampleKey1] = smv
 	for _, test := range tests {
 		lenLogBefore := len(lm.log.Entry)
 		tid := lm.nextTransactionID()
