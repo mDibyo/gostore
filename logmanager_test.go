@@ -11,7 +11,7 @@ import (
 	"testing"
 )
 
-// Variables used in tests
+// Variables and functions used in tests
 var (
 	// Store keys and values
 	sampleKey1   = Key("key_1")
@@ -20,8 +20,9 @@ var (
 	sampleValue2 = Value([]byte{1, 2, 3, 4, 5})
 	sampleValue3 = Value([]byte{2, 3, 4, 5, 6})
 
-	// Miscellaneous
-	testLogDir string
+	// logManager variables and functions
+	testLogDir            string
+	newLogManagerOverride func(*testing.T) *logManager
 )
 
 func init() {
@@ -29,6 +30,13 @@ func init() {
 	testLogDir, err = ioutil.TempDir("", "gostore_logs_")
 	if err != nil {
 		panic(fmt.Errorf("could not create temporary directory for tests: %v", err))
+	}
+	newLogManagerOverride = func(t *testing.T) *logManager {
+		lm, err := newLogManager(testLogDir)
+		if err != nil {
+			t.Fatalf("could not create log manager instance: %v", err)
+		}
+		return lm
 	}
 }
 
@@ -45,12 +53,12 @@ func testLogEntry(t *testing.T, gotEntry, wantEntry *pb.LogEntry) {
 }
 
 func TestAddLogEntry(t *testing.T) {
-	nextLSN := logSequenceNumber(5)
+	nextLSN := 5
 	tests := []struct {
 		tid              int64
 		entryType        pb.LogEntry_LogEntryType
 		wantLenLogAfter  int
-		wantNextLSNAfter logSequenceNumber
+		wantNextLSNAfter int
 	}{
 		{
 			tid:              123,
@@ -66,7 +74,7 @@ func TestAddLogEntry(t *testing.T) {
 		},
 	}
 
-	lm := *newLogManager(testLogDir)
+	lm := *newLogManagerOverride(t)
 	lm.nextLSN = nextLSN
 	for _, test := range tests {
 		lm.addLogEntry(&pb.LogEntry{
@@ -83,7 +91,7 @@ func TestAddLogEntry(t *testing.T) {
 }
 
 func TestBeginTransaction(t *testing.T) {
-	lm := *newLogManager(testLogDir)
+	lm := *newLogManagerOverride(t)
 	tid := NewTransaction()
 	lm.beginTransaction(tid)
 	wantLogEntry := &pb.LogEntry{
@@ -104,7 +112,7 @@ func TestBeginTransaction(t *testing.T) {
 }
 
 func TestGetValue(t *testing.T) {
-	lm := *newLogManager(testLogDir)
+	lm := *newLogManagerOverride(t)
 	smv := newStoreMapValue()
 	smv.value = sampleValue1
 	lm.storeMap[sampleKey1] = smv
@@ -162,7 +170,7 @@ func TestSetValue(t *testing.T) {
 		},
 	}
 
-	lm := newLogManager(testLogDir)
+	lm := newLogManagerOverride(t)
 	smv := newStoreMapValue()
 	smv.value = sampleValue3
 	lm.storeMap[sampleKey2] = smv
@@ -203,7 +211,7 @@ func TestSetValue(t *testing.T) {
 }
 
 func TestDeleteValue(t *testing.T) {
-	lm := newLogManager(testLogDir)
+	lm := newLogManagerOverride(t)
 	smv := newStoreMapValue()
 	smv.value = sampleValue1
 	lm.storeMap[sampleKey1] = smv
@@ -267,7 +275,7 @@ func TestCommitTransaction(t *testing.T) {
 		},
 	}
 
-	lm := newLogManager(testLogDir)
+	lm := newLogManagerOverride(t)
 	smv := newStoreMapValue()
 	smv.value = sampleValue1
 	lm.storeMap[sampleKey1] = smv

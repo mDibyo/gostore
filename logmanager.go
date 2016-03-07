@@ -6,6 +6,7 @@ locks on values.
 package gostore
 
 import (
+	"flag"
 	"fmt"
 	"github.com/golang/protobuf/proto"
 	pb "github.com/mDibyo/gostore/pb"
@@ -153,29 +154,66 @@ func (rw *rwMutexWrapper) unlock() {
 	}
 }
 
-type logSequenceNumber int64
-
 type currentMutexesMap map[Key]*rwMutexWrapper
+
+//var logFileRegexp = regexp.MustCompile(`(?P<startLSN>0*\d)_(?P<endLSN>0*\d).log`)
+var logFileFmt = "%012d_%012d.log"
 
 type logManager struct {
 	log            pb.Log                              // the log of transaction operations
-	logDir         string                              // directory in which log is stored
+	logDir         string                              // the directory in which log is stored
 	logLock        sync.Mutex                          // lock to synchronize access to the log
-	nextLSN        logSequenceNumber                   // the LSN for the next log entry
-	nextLSNToFlush logSequenceNumber                   // the LSN of the next log entry to be flushed
+	nextLSN        int                                 // the LSN for the next log entry
+	nextLSNToFlush int                                 // the LSN of the next log entry to be flushed
+	nextTID        TransactionID                       // the Transaction ID for the next transaction
 	currMutexes    map[TransactionID]currentMutexesMap // the mutexes held currently by running transactions
 	storeMap       map[Key]*storeMapValue              // the master copy of the current state of the store
 }
 
-func newLogManager(ld string) *logManager {
-	if ld == "" {
-		ld = "./data"
+func newLogManager(ld string) (lm *logManager, err error) {
+	lm = &logManager{}
+	lm.logDir = ld
+	if lm.logDir == "" {
+		lm.logDir = "./data"
 	}
-	return &logManager{
-		logDir:      ld,
-		currMutexes: make(map[TransactionID]currentMutexesMap),
-		storeMap:    make(map[Key]*storeMapValue),
+	lm.currMutexes = make(map[TransactionID]currentMutexesMap)
+	lm.storeMap = make(map[Key]*storeMapValue)
+
+	// Retrieve old logs if they exist and replay
+	files, err := ioutil.ReadDir(lm.logDir)
+	if err != nil {
+		return nil, fmt.Errorf("could not retrieve old logs: %v", err)
 	}
+	for _, file := range files {
+		if !file.IsDir() {
+			var startLSN, endLSN = -1, -1
+			_, err := fmt.Sscanf(file.Name(), logFileFmt, &startLSN, &endLSN)
+			if err != nil {
+				continue
+			}
+			if startLSN != lm.nextLSN || endLSN < startLSN {
+				err = fmt.Errorf("log file %s was not in the expected format", file.Name())
+				break
+			}
+			filename := fmt.Sprintf("%s/%s", lm.logDir, file.Name())
+			data, err := ioutil.ReadFile(filename)
+			if err != nil {
+				err = fmt.Errorf("could not read log file %s: %v", filename, err)
+				break
+			}
+			if err = proto.UnmarshalMerge(data, &lm.log); err != nil {
+				err = fmt.Errorf("could not unmarshal log file %s: %v", filename, err)
+				break
+			}
+			lm.nextLSN = len(lm.log.Entry)
+			if nextLSN := endLSN + 1; nextLSN != lm.nextLSN {
+				err = fmt.Errorf("log file %s did not have the right number of entries", filename)
+				break
+			}
+		}
+	}
+	lm.nextLSNToFlush = lm.nextLSN
+	return
 }
 
 func (cm currentMutexesMap) getWrappedRWMutex(k Key, smv *storeMapValue) *rwMutexWrapper {
@@ -209,8 +247,8 @@ func (lm *logManager) flushLog() error {
 	if err != nil {
 		return fmt.Errorf("error while marshalling log to be flushed: %v", err)
 	}
-	filename := fmt.Sprintf("%s/%d_%d.log", lm.logDir, lm.nextLSNToFlush, lm.nextLSN-1)
-	if err := ioutil.WriteFile(filename, data, 0644); err != nil {
+	filename := fmt.Sprintf(logFileFmt, lm.nextLSNToFlush, lm.nextLSN-1)
+	if err := ioutil.WriteFile(fmt.Sprintf("%s/%s", lm.logDir, filename), data, 0644); err != nil {
 		return fmt.Errorf("error while writing out log: %v", err)
 	}
 	lm.nextLSNToFlush = lm.nextLSN
@@ -410,5 +448,11 @@ iterate:
 var lmInstance logManager
 
 func init() {
-	lmInstance = *newLogManager("")
+	logDir := flag.String("logDir", "", "the directory in which log files will be stored")
+	flag.Parse()
+	if lmInstancePtr, err := newLogManager(*logDir); err != nil {
+		panic(err)
+	} else {
+		lmInstance = *lmInstancePtr
+	}
 }
