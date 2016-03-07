@@ -92,7 +92,7 @@ func TestAddLogEntry(t *testing.T) {
 
 func TestBeginTransaction(t *testing.T) {
 	lm := *newLogManagerOverride(t)
-	tid := NewTransaction()
+	tid := lm.nextTransactionID()
 	lm.beginTransaction(tid)
 	wantLogEntry := &pb.LogEntry{
 		Lsn:       proto.Int64(0),
@@ -117,7 +117,7 @@ func TestGetValue(t *testing.T) {
 	smv.value = sampleValue1
 	lm.storeMap[sampleKey1] = smv
 
-	tid := NewTransaction()
+	tid := lm.nextTransactionID()
 	lm.beginTransaction(tid)
 	wantLenLogAfter := len(lm.log.Entry)
 	// Check value
@@ -175,7 +175,7 @@ func TestSetValue(t *testing.T) {
 	smv.value = sampleValue3
 	lm.storeMap[sampleKey2] = smv
 	for _, test := range tests {
-		tid := NewTransaction()
+		tid := lm.nextTransactionID()
 		lm.beginTransaction(tid)
 		lenLogBefore := len(lm.log.Entry)
 		// Check setting
@@ -216,7 +216,7 @@ func TestDeleteValue(t *testing.T) {
 	smv.value = sampleValue1
 	lm.storeMap[sampleKey1] = smv
 
-	tid := NewTransaction()
+	tid := lm.nextTransactionID()
 	lm.beginTransaction(tid)
 	lenLogBefore := len(lm.log.Entry)
 	// Check delete operation
@@ -281,7 +281,7 @@ func TestCommitTransaction(t *testing.T) {
 	lm.storeMap[sampleKey1] = smv
 	for _, test := range tests {
 		lenLogBefore := len(lm.log.Entry)
-		tid := NewTransaction()
+		tid := lm.nextTransactionID()
 		lm.beginTransaction(tid)
 		if test.key != "" {
 			var err error

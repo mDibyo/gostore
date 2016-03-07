@@ -154,9 +154,11 @@ func (rw *rwMutexWrapper) unlock() {
 	}
 }
 
+// TransactionID is used to uniquely identify/represent a transaction.
+type TransactionID int64
+
 type currentMutexesMap map[Key]*rwMutexWrapper
 
-//var logFileRegexp = regexp.MustCompile(`(?P<startLSN>0*\d)_(?P<endLSN>0*\d).log`)
 var logFileFmt = "%012d_%012d.log"
 
 type logManager struct {
@@ -253,6 +255,11 @@ func (lm *logManager) flushLog() error {
 	}
 	lm.nextLSNToFlush = lm.nextLSN
 	return nil
+}
+
+func (lm *logManager) nextTransactionID() TransactionID {
+	lm.nextTID++
+	return lm.nextTID - 1
 }
 
 func (lm *logManager) beginTransaction(tid TransactionID) {

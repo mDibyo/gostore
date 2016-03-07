@@ -1,71 +1,72 @@
 package gostore
 
-// TransactionID is used to uniquely identify/represent a transaction
-type TransactionID int64
-
-// New Transaction creates a new transaction and returns its TransactionID.
-func NewTransaction() (tid TransactionID) {
-	tid = lmInstance.nextTID
-	lmInstance.beginTransaction(tid)
-	lmInstance.nextTID++
-	return
+// Transaction is an atomic operation or set of operations on the store.
+type Transaction struct {
+	tid TransactionID
 }
 
-// Commit commits and ends the transaction with this TransactionID.
-func (tid TransactionID) Commit() (err error) {
-	return lmInstance.commitTransaction(tid)
+// New Transaction creates a new transaction and returns it.
+func NewTransaction() Transaction {
+	t := Transaction{lmInstance.nextTransactionID()}
+	lmInstance.beginTransaction(t.tid)
+	return t
 }
 
-// Commit aborts and ends the transaction with this TransactionID.
-func (tid TransactionID) Abort() (err error) {
-	return lmInstance.abortTransaction(tid)
+// Commit commits and ends Transaction.
+func (t Transaction) Commit() (err error) {
+	return lmInstance.commitTransaction(t.tid)
 }
 
-// Get retrieves the value of a key in transaction with this TransactionID.
-func (tid TransactionID) Get(key Key) (value Value, err error) {
-	return lmInstance.getValue(tid, key)
+// Commit aborts and ends Transaction.
+func (t Transaction) Abort() (err error) {
+	return lmInstance.abortTransaction(t.tid)
 }
 
-// Set sets the value of a key in transaction with this TransactionID.
-func (tid TransactionID) Set(key Key, value Value) (err error) {
-	return lmInstance.setValue(tid, key, value)
+// Get retrieves the value of a key in Transaction.
+func (t Transaction) Get(key Key) (value Value, err error) {
+	return lmInstance.getValue(t.tid, key)
 }
 
-// Delete deletes a key in transaction with this TransactionID.
-func (tid TransactionID) Delete(key Key) (err error) {
-	return lmInstance.deleteValue(tid, key)
+// Set sets the value of a key in Transaction.
+func (t Transaction) Set(key Key, value Value) (err error) {
+	return lmInstance.setValue(t.tid, key, value)
+}
+
+// Delete deletes a key in Transaction.
+func (t Transaction) Delete(key Key) (err error) {
+	return lmInstance.deleteValue(t.tid, key)
 }
 
 // Get retrieves the value of a key in a new single-operation transaction.
 func Get(key Key) (value Value, err error) {
-	tid := NewTransaction()
-	value, err = tid.Get(key)
+	t := NewTransaction()
+	value, err = t.Get(key)
 	if err != nil {
-		tid.Abort()
+		t.Abort()
 		return
 	}
-	err = tid.Commit()
+	err = t.Commit()
 	return
 }
 
 // Set sets the value of a key in a new single-operation transaction.
 func Set(key Key, value Value) (err error) {
-	tid := NewTransaction()
-	if err = tid.Set(key, value); err != nil {
-		tid.Abort()
+	t := NewTransaction()
+	if err = t.Set(key, value); err != nil {
+		t.Abort()
 		return
 	}
-	err = tid.Commit()
+	err = t.Commit()
 	return
 }
 
 // Delete deletes a key in a new single-operation transaction.
 func Delete(key Key) (err error) {
-	tid := NewTransaction()
-	if err = tid.Delete(key); err != nil {
-		tid.Abort()
+	t := NewTransaction()
+	if err = t.Delete(key); err != nil {
+		t.Abort()
 		return
 	}
-	err = tid.Commit()
+	err = t.Commit()
 	return
 }
