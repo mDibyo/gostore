@@ -40,120 +40,6 @@ func newStoreMapValue() *storeMapValue {
 	}
 }
 
-// rwMutexWrapper is a thread-safe convenience wrapper for sync.RWMutex used in StoreMapValue.
-type rwMutexWrapper struct {
-	selfLock sync.Mutex    // Self Lock to synchronize lock and unlock operations.
-	smvLock  *sync.RWMutex // the lock being wrapped.
-	held     bool          // Whether the lock is held.
-	wAllowed bool          // Whether writes are allowed.
-}
-
-func wrapRWMutex(l *sync.RWMutex) rwMutexWrapper {
-	return rwMutexWrapper{smvLock: l}
-}
-
-func (rw *rwMutexWrapper) rLocked() (b bool) {
-	rw.selfLock.Lock()
-	b = rw.held && !rw.wAllowed
-	rw.selfLock.Unlock()
-	return
-}
-
-func (rw *rwMutexWrapper) wLocked() (b bool) {
-	rw.selfLock.Lock()
-	b = rw.held && rw.wAllowed
-	rw.selfLock.Unlock()
-	return
-}
-
-func (rw *rwMutexWrapper) rLock() {
-	rw.selfLock.Lock()
-	defer rw.selfLock.Unlock()
-
-	if rw.held {
-		return
-	}
-	rw.rLockUnsafe()
-}
-
-func (rw *rwMutexWrapper) rLockUnsafe() {
-	rw.smvLock.RLock()
-	rw.held = true
-}
-
-func (rw *rwMutexWrapper) rUnlock() {
-	rw.selfLock.Lock()
-	defer rw.selfLock.Unlock()
-
-	if !rw.held {
-		return
-	}
-	rw.rUnlockUnsafe()
-}
-
-func (rw *rwMutexWrapper) rUnlockUnsafe() {
-	rw.smvLock.RUnlock()
-	rw.held = false
-}
-
-func (rw *rwMutexWrapper) wLock() {
-	rw.selfLock.Lock()
-	defer rw.selfLock.Unlock()
-
-	if rw.held && rw.wAllowed {
-		return
-	}
-	rw.wLockUnsafe()
-}
-
-func (rw *rwMutexWrapper) wLockUnsafe() {
-	rw.smvLock.Lock()
-	rw.held = true
-	rw.wAllowed = true
-}
-
-func (rw *rwMutexWrapper) wUnlock() {
-	rw.selfLock.Lock()
-	defer rw.selfLock.Unlock()
-
-	if !rw.held || !rw.wAllowed {
-		return
-	}
-	rw.wUnlockUnsafe()
-}
-
-func (rw *rwMutexWrapper) wUnlockUnsafe() {
-	rw.smvLock.Unlock()
-	rw.held = false
-	rw.wAllowed = false
-}
-
-func (rw *rwMutexWrapper) promote() {
-	rw.selfLock.Lock()
-	defer rw.selfLock.Unlock()
-
-	if rw.wAllowed {
-		return
-	}
-	rw.rUnlockUnsafe()
-	rw.wLockUnsafe()
-}
-
-func (rw *rwMutexWrapper) unlock() {
-	rw.selfLock.Lock()
-	defer rw.selfLock.Unlock()
-
-	if !rw.held {
-		return
-	}
-
-	if rw.wAllowed {
-		rw.wUnlockUnsafe()
-	} else {
-		rw.rUnlockUnsafe()
-	}
-}
-
 // TransactionID is used to uniquely identify/represent a transaction.
 type TransactionID int64
 
@@ -207,39 +93,7 @@ func newLogManager(ld string) (lm *logManager, err error) {
 	lm.store = make(storeMap)
 
 	// Retrieve old logs if they exist
-	files, err := ioutil.ReadDir(lm.logDir)
-	if err != nil {
-		return nil, fmt.Errorf("could not retrieve old logs: %v", err)
-	}
-	for _, file := range files {
-		if !file.IsDir() {
-			var startLSN, endLSN = -1, -1
-			_, err := fmt.Sscanf(file.Name(), logFileFmt, &startLSN, &endLSN)
-			if err != nil {
-				continue
-			}
-			if startLSN != lm.nextLSN || endLSN < startLSN {
-				err = fmt.Errorf("log file %s was not in the expected format", file.Name())
-				break
-			}
-			filename := fmt.Sprintf("%s/%s", lm.logDir, file.Name())
-			data, err := ioutil.ReadFile(filename)
-			if err != nil {
-				err = fmt.Errorf("could not read log file %s: %v", filename, err)
-				break
-			}
-			if err = proto.UnmarshalMerge(data, &lm.log); err != nil {
-				err = fmt.Errorf("could not unmarshal log file %s: %v", filename, err)
-				break
-			}
-			lm.nextLSN = len(lm.log.Entry)
-			if nextLSN := endLSN + 1; nextLSN != lm.nextLSN {
-				err = fmt.Errorf("log file %s did not have the right number of entries", filename)
-				break
-			}
-		}
-	}
-	lm.nextLSNToFlush = lm.nextLSN
+	err = lm.retrieveLog()
 
 	// Replay log over storeMap
 	for _, e := range lm.log.Entry {
@@ -276,6 +130,44 @@ func (lm *logManager) addLogEntry(e *pb.LogEntry) {
 	lm.nextLSN++
 }
 
+func (lm *logManager) retrieveLog() (err error) {
+	files, err := ioutil.ReadDir(lm.logDir)
+	if err != nil {
+		return fmt.Errorf("could not retrieve old logs: %v", err)
+	}
+
+	for _, file := range files {
+		if !file.IsDir() {
+			var startLSN, endLSN = -1, -1
+			_, err = fmt.Sscanf(file.Name(), logFileFmt, &startLSN, &endLSN)
+			if err != nil {
+				continue
+			}
+			if startLSN != lm.nextLSN || endLSN < startLSN {
+				err = fmt.Errorf("log file %s was not in the expected format", file.Name())
+				break
+			}
+			filename := fmt.Sprintf("%s/%s", lm.logDir, file.Name())
+			data, err := ioutil.ReadFile(filename)
+			if err != nil {
+				err = fmt.Errorf("could not read log file %s: %v", filename, err)
+				break
+			}
+			if err = proto.UnmarshalMerge(data, &lm.log); err != nil {
+				err = fmt.Errorf("could not unmarshal log file %s: %v", filename, err)
+				break
+			}
+			lm.nextLSN = len(lm.log.Entry)
+			if nextLSN := endLSN + 1; nextLSN != lm.nextLSN {
+				err = fmt.Errorf("log file %s did not have the right number of entries", filename)
+				break
+			}
+		}
+	}
+	lm.nextLSNToFlush = lm.nextLSN
+	return err
+}
+
 func (lm *logManager) flushLog() error {
 	lm.logLock.Lock()
 	defer lm.logLock.Unlock()
@@ -302,11 +194,11 @@ func (lm *logManager) nextTransactionID() TransactionID {
 }
 
 func (lm *logManager) beginTransaction(tid TransactionID) {
+	lm.currMutexes[tid] = make(currentMutexesMap)
 	lm.addLogEntry(&pb.LogEntry{
 		Tid:       proto.Int64(int64(tid)),
 		EntryType: pb.LogEntry_BEGIN.Enum(),
 	})
-	lm.currMutexes[tid] = make(currentMutexesMap)
 }
 
 func (lm *logManager) getValue(tid TransactionID, k Key) (Value, error) {
