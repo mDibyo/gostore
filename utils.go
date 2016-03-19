@@ -4,6 +4,9 @@ import "sync"
 
 // CopyByteArray returns a copy of src byte array
 func CopyByteArray(src []byte) []byte {
+	if src == nil {
+		return nil
+	}
 	dst := make([]byte, len(src))
 	copy(dst, src)
 	return dst

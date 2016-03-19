@@ -108,6 +108,9 @@ func newLogManager(ld string) (lm *logManager, err error) {
 		case pb.LogEntry_COMMIT:
 		case pb.LogEntry_ABORT:
 		case pb.LogEntry_END:
+			for _, rw := range lm.currMutexes[tid] {
+				rw.unlock()
+			}
 			delete(lm.currMutexes, tid)
 		}
 	}

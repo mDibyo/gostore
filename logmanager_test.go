@@ -17,13 +17,15 @@ var (
 	sampleKey1   = Key("key_1")
 	sampleKey2   = Key("key_2")
 	sampleKey3   = Key("key_3")
-	sampleValue1 = Value([]byte{0, 1, 2, 3, 4})
-	sampleValue2 = Value([]byte{1, 2, 3, 4, 5})
-	sampleValue3 = Value([]byte{2, 3, 4, 5, 6})
+	sampleKey4   = Key("key_4")
+	sampleKey5   = Key("key_5")
+	sampleValue1 = Value([]byte{1, 2, 3, 4, 5})
+	sampleValue2 = Value([]byte{2, 3, 4, 5, 6})
+	sampleValue3 = Value([]byte{3, 4, 5, 6, 7})
 
 	// logManager variables and functions
 	testLogDir            string
-	newLogManagerOverride func(*testing.T) *logManager
+	newLogManagerForTest func(*testing.T) *logManager
 )
 
 func init() {
@@ -32,7 +34,7 @@ func init() {
 	if err != nil {
 		panic(fmt.Errorf("could not create temporary directory for tests: %v", err))
 	}
-	newLogManagerOverride = func(t *testing.T) *logManager {
+	newLogManagerForTest = func(t *testing.T) *logManager {
 		lm, err := newLogManager(testLogDir)
 		if err != nil {
 			t.Fatalf("could not create log manager instance: %v", err)
@@ -75,7 +77,7 @@ func TestAddLogEntry(t *testing.T) {
 		},
 	}
 
-	lm := *newLogManagerOverride(t)
+	lm := *newLogManagerForTest(t)
 	lm.nextLSN = nextLSN
 	for _, test := range tests {
 		lm.addLogEntry(&pb.LogEntry{
@@ -92,7 +94,7 @@ func TestAddLogEntry(t *testing.T) {
 }
 
 func TestBeginTransaction(t *testing.T) {
-	lm := *newLogManagerOverride(t)
+	lm := *newLogManagerForTest(t)
 	tid := lm.nextTransactionID()
 	lm.beginTransaction(tid)
 	wantLogEntry := &pb.LogEntry{
@@ -113,9 +115,9 @@ func TestBeginTransaction(t *testing.T) {
 }
 
 func TestGetValue(t *testing.T) {
-	lm := *newLogManagerOverride(t)
+	lm := *newLogManagerForTest(t)
 	smv := newStoreMapValue()
-	smv.value = sampleValue1
+	smv.value = CopyByteArray(sampleValue1)
 	lm.store[sampleKey1] = smv
 
 	tid := lm.nextTransactionID()
@@ -153,21 +155,21 @@ func TestSetValue(t *testing.T) {
 	}{
 		{ // Add new key
 			key:   sampleKey1,
-			value: sampleValue1,
+			value: CopyByteArray(sampleValue1),
 			wantLogEntry: &pb.LogEntry{
 				EntryType: pb.LogEntry_UPDATE.Enum(),
 				Key:       proto.String(string(sampleKey1)),
-				NewValue:  sampleValue1,
+				NewValue:  CopyByteArray(sampleValue1),
 			},
 		},
 		{ // Change value for existing key
 			key:   sampleKey2,
-			value: sampleValue2,
+			value: CopyByteArray(sampleValue2),
 			wantLogEntry: &pb.LogEntry{
 				EntryType: pb.LogEntry_UPDATE.Enum(),
 				Key:       proto.String(string(sampleKey2)),
-				OldValue:  sampleValue3,
-				NewValue:  sampleValue2,
+				OldValue:  CopyByteArray(sampleValue3),
+				NewValue:  CopyByteArray(sampleValue2),
 			},
 		},
 		{
@@ -176,9 +178,9 @@ func TestSetValue(t *testing.T) {
 		},
 	}
 
-	lm := newLogManagerOverride(t)
+	lm := newLogManagerForTest(t)
 	smv := newStoreMapValue()
-	smv.value = sampleValue3
+	smv.value = CopyByteArray(sampleValue3)
 	lm.store[sampleKey2] = smv
 	for _, test := range tests {
 		tid := lm.nextTransactionID()
@@ -225,9 +227,9 @@ func TestSetValue(t *testing.T) {
 }
 
 func TestDeleteValue(t *testing.T) {
-	lm := newLogManagerOverride(t)
+	lm := newLogManagerForTest(t)
 	smv := newStoreMapValue()
-	smv.value = sampleValue1
+	smv.value = CopyByteArray(sampleValue1)
 	lm.store[sampleKey1] = smv
 
 	tid := lm.nextTransactionID()
@@ -256,7 +258,7 @@ func TestDeleteValue(t *testing.T) {
 		Tid:       proto.Int64(int64(tid)),
 		EntryType: pb.LogEntry_UPDATE.Enum(),
 		Key:       proto.String(string(sampleKey1)),
-		OldValue:  sampleValue1,
+		OldValue:  CopyByteArray(sampleValue1),
 	}
 	testLogEntry(t, gotEntry, wantEntry)
 	// Check currMutexes
@@ -275,24 +277,24 @@ func TestCommitTransaction(t *testing.T) {
 		value          Value
 		wantNumEntries int
 	}{
-		{
+		{ // No operations
 			wantNumEntries: 3,
 		},
-		{
-			key:            sampleKey1,
+		{ // Get operation
+			key:            sampleKey4,
 			wantNumEntries: 3,
 		},
-		{
-			key:            sampleKey2,
-			value:          sampleValue2,
+		{ // Set operation
+			key:            sampleKey5,
+			value:          CopyByteArray(sampleValue2),
 			wantNumEntries: 4,
 		},
 	}
 
-	lm := newLogManagerOverride(t)
+	lm := newLogManagerForTest(t)
 	smv := newStoreMapValue()
-	smv.value = sampleValue1
-	lm.store[sampleKey1] = smv
+	smv.value = CopyByteArray(sampleValue1)
+	lm.store[sampleKey4] = smv
 	for _, test := range tests {
 		lenLogBefore := len(lm.log.Entry)
 		tid := lm.nextTransactionID()
@@ -340,4 +342,106 @@ func TestCommitTransaction(t *testing.T) {
 			t.Error("found transaction in current mutexes map.")
 		}
 	}
+}
+
+func TestAbortTransaction(t *testing.T) {
+	lm := newLogManagerForTest(t)
+	resetLogManager := func() {
+		smv := newStoreMapValue()
+		smv.value = CopyByteArray(sampleValue1)
+		lm.store[sampleKey1] = smv
+	}
+	checkCommon := func(tid TransactionID, wantLenLogAfter, numUndoRecords int) {
+		// Check abort operation
+		if err := lm.abortTransaction(tid); err != nil {
+			t.Errorf("got an error while trying to abort transaction: %v", err)
+		}
+
+		// Check log
+		gotLenLogAfter := len(lm.log.Entry)
+		if gotLenLogAfter != wantLenLogAfter {
+			t.Errorf("did not get expected log length. expected=%d, actual=%d.", wantLenLogAfter, gotLenLogAfter)
+		}
+		gotLogEntry := lm.log.Entry[gotLenLogAfter-2-numUndoRecords]
+		wantLogEntry := &pb.LogEntry{
+			Lsn:       gotLogEntry.Lsn,
+			Tid:       proto.Int64(int64(tid)),
+			EntryType: pb.LogEntry_ABORT.Enum(),
+		}
+		testLogEntry(t, gotLogEntry, wantLogEntry)
+		gotLogEntry = lm.log.Entry[gotLenLogAfter-1]
+		wantLogEntry = &pb.LogEntry{
+			Lsn:       gotLogEntry.Lsn,
+			Tid:       proto.Int64(int64(tid)),
+			EntryType: pb.LogEntry_END.Enum(),
+		}
+		testLogEntry(t, gotLogEntry, wantLogEntry)
+		if lm.nextLSNToFlush != lm.nextLSN {
+			t.Error("found that log was not flushed.")
+		}
+
+		// Check currMutexes
+		if _, ok := lm.currMutexes[tid]; ok {
+			t.Error("found transaction in current mutexes map.")
+		}
+	}
+	checkStoreMapKey := func( k Key, v Value) {
+		gotSMV, ok := lm.store[k]
+		if v != nil { // key should exist
+			if !ok {
+				t.Errorf("did not find value for key='%s' in storeMap.", k)
+			} else if !bytes.Equal(gotSMV.value, v) {
+				t.Errorf("did not get back the correct value. key='%s', expected=%v, actual=%v.", k, v, gotSMV.value)
+			}
+		} else { // key should not exist
+			if ok {
+				t.Errorf("found value for key='%s' in storeMap: %v", k, gotSMV.value)
+			}
+		}
+	}
+
+	// No operations
+	resetLogManager()
+	lenLogBefore := len(lm.log.Entry)
+	tid := lm.nextTransactionID()
+	lm.beginTransaction(tid)
+	if _, err := lm.getValue(tid, sampleKey1); err != nil {
+		t.Errorf("got an error while getting value for key='%s': %v", sampleKey1, err)
+	}
+	checkCommon(tid, lenLogBefore+3, 0)
+	checkStoreMapKey(sampleKey1, sampleValue1)
+
+	// Set operation with existing key
+	resetLogManager()
+	lenLogBefore = len(lm.log.Entry)
+	tid = lm.nextTransactionID()
+	lm.beginTransaction(tid)
+	if err := lm.setValue(tid, sampleKey1, CopyByteArray(sampleValue2)); err != nil {
+		t.Errorf("got an error while setting value for key='%s': %v", sampleKey1, err)
+	}
+	checkCommon(tid, lenLogBefore+5, 1)
+	checkStoreMapKey(sampleKey1, sampleValue1)
+
+	// Set operation with new key
+	resetLogManager()
+	lenLogBefore = len(lm.log.Entry)
+	tid = lm.nextTransactionID()
+	lm.beginTransaction(tid)
+	if err := lm.setValue(tid, sampleKey2, CopyByteArray(sampleValue3)); err != nil {
+		t.Errorf("got an error while setting value for key='%s': %v", sampleKey2, err)
+	}
+	checkCommon(tid, lenLogBefore+5, 1)
+	checkStoreMapKey(sampleKey1, sampleValue1)
+	checkStoreMapKey(sampleKey2, nil)
+
+	// Delete operation (with existing key)
+	resetLogManager()
+	lenLogBefore = len(lm.log.Entry)
+	tid = lm.nextTransactionID()
+	lm.beginTransaction(tid)
+	if err := lm.deleteValue(tid, sampleKey1); err != nil {
+		t.Errorf("got an error while deleting key='%s': %v", sampleKey1, err)
+	}
+	checkCommon(tid, lenLogBefore+5, 1)
+	checkStoreMapKey(sampleKey1, sampleValue1)
 }
