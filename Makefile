@@ -24,3 +24,7 @@ test:
 clean:
 	$(MAKE)	-C ${PB_DIR} clean
 	$(MAKE) -C ${CMD_DIR} clean
+
+clear_data:
+	rm data/*
+

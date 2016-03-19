@@ -16,6 +16,7 @@ var (
 	// Store keys and values
 	sampleKey1   = Key("key_1")
 	sampleKey2   = Key("key_2")
+	sampleKey3   = Key("key_3")
 	sampleValue1 = Value([]byte{0, 1, 2, 3, 4})
 	sampleValue2 = Value([]byte{1, 2, 3, 4, 5})
 	sampleValue3 = Value([]byte{2, 3, 4, 5, 6})
@@ -147,6 +148,7 @@ func TestSetValue(t *testing.T) {
 	tests := []struct {
 		key          Key
 		value        Value
+		wantError    bool
 		wantLogEntry *pb.LogEntry
 	}{
 		{ // Add new key
@@ -168,6 +170,10 @@ func TestSetValue(t *testing.T) {
 				NewValue:  sampleValue2,
 			},
 		},
+		{
+			key:       sampleKey3,
+			wantError: true,
+		},
 	}
 
 	lm := newLogManagerOverride(t)
@@ -179,8 +185,16 @@ func TestSetValue(t *testing.T) {
 		lm.beginTransaction(tid)
 		lenLogBefore := len(lm.log.Entry)
 		// Check setting
-		if err := lm.setValue(tid, test.key, test.value); err != nil {
-			t.Errorf("got an error for (key='%s', value=%v) while trying to set value: %v.", test.key, test.value, err)
+		err := lm.setValue(tid, test.key, test.value)
+		if test.wantError {
+			if err == nil {
+				t.Errorf("did not get expected error for (key='%s', value=%v) while trying to set value.", test.key, test.value)
+			}
+			continue
+		} else {
+			if err != nil {
+				t.Errorf("got an unexpected error for (key='%s', value=%v) while trying to set value: %v.", test.key, test.value, err)
+			}
 		}
 		// Check storeMap
 		if gotSMV, ok := lm.store[test.key]; !ok {

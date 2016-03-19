@@ -159,12 +159,12 @@ type TransactionID int64
 
 type storeMap map[Key]*storeMapValue
 
-func (sm storeMap) storeMapValue(k Key, createIfNotExist bool) (smv *storeMapValue, err error) {
+func (sm storeMap) storeMapValue(k Key, addIfNotExist bool) (smv *storeMapValue, err error) {
 	smv, ok := sm[k]
 	if ok {
 		return
 	}
-	if !createIfNotExist {
+	if !addIfNotExist {
 		return smv, fmt.Errorf("key %s does not exist.", k)
 	}
 
@@ -206,7 +206,7 @@ func newLogManager(ld string) (lm *logManager, err error) {
 	lm.currMutexes = make(map[TransactionID]currentMutexesMap)
 	lm.store = make(storeMap)
 
-	// Retrieve old logs if they exist and replay
+	// Retrieve old logs if they exist
 	files, err := ioutil.ReadDir(lm.logDir)
 	if err != nil {
 		return nil, fmt.Errorf("could not retrieve old logs: %v", err)
@@ -240,6 +240,29 @@ func newLogManager(ld string) (lm *logManager, err error) {
 		}
 	}
 	lm.nextLSNToFlush = lm.nextLSN
+
+	// Replay log over storeMap
+	for _, e := range lm.log.Entry {
+		tid := TransactionID(*e.Tid)
+		switch *e.EntryType {
+		case pb.LogEntry_BEGIN:
+			lm.currMutexes[tid] = make(currentMutexesMap)
+		case pb.LogEntry_UPDATE:
+			fallthrough
+		case pb.LogEntry_UNDO:
+			lm.updateStoreMapValue(lm.currMutexes[tid], Key(*e.Key), Value(CopyByteArray(e.NewValue)))
+		case pb.LogEntry_COMMIT:
+		case pb.LogEntry_ABORT:
+		case pb.LogEntry_END:
+			delete(lm.currMutexes, tid)
+		}
+	}
+
+	// Abort incomplete transactions
+	for tid, _ := range lm.currMutexes {
+		lm.abortTransaction(tid)
+	}
+
 	return
 }
 
@@ -301,29 +324,36 @@ func (lm *logManager) getValue(tid TransactionID, k Key) (Value, error) {
 	return smv.value, nil
 }
 
-func (lm *logManager) setValue(tid TransactionID, k Key, v Value) error {
+func (lm *logManager) updateStoreMapValue(cm currentMutexesMap, k Key, v Value) (oldValue, newValue []byte, err error) {
+	smv, err := lm.store.storeMapValue(k, true)
+	if err != nil {
+		return nil, nil, fmt.Errorf("could not retrieve value: %v", err)
+	}
+
+	rw := cm.getWrappedRWMutex(k, smv)
+	rw.wLock()
+	if smv.value != nil {
+		oldValue = CopyByteArray(smv.value)
+	}
+	if v != nil {
+		smv.value = v
+		newValue = CopyByteArray(v)
+	} else {
+		delete(lm.store, k)
+	}
+
+	return
+}
+
+func (lm *logManager) updateValue(tid TransactionID, k Key, v Value) error {
 	cm, ok := lm.currMutexes[tid]
 	if !ok {
 		return fmt.Errorf("transaction with ID %d is not currently running.", tid)
 	}
-	if v == nil {
-		return fmt.Errorf("value is nil.")
-	}
-	// Add key if it does not exist
-	smv, err := lm.store.storeMapValue(k, true)
+	oldValue, newValue, err := lm.updateStoreMapValue(cm, k, v)
 	if err != nil {
-		return fmt.Errorf("could not retrieve value: %v", err)
+		return err
 	}
-
-	// Update value
-	rw := cm.getWrappedRWMutex(k, smv)
-	rw.wLock()
-	var oldValue []byte
-	if smv.value != nil {
-		oldValue = CopyByteArray(smv.value)
-	}
-	newValue := CopyByteArray(v)
-	smv.value = v
 
 	// Write log entry
 	lm.addLogEntry(&pb.LogEntry{
@@ -337,33 +367,19 @@ func (lm *logManager) setValue(tid TransactionID, k Key, v Value) error {
 	return nil
 }
 
+func (lm *logManager) setValue(tid TransactionID, k Key, v Value) error {
+	if v == nil {
+		return fmt.Errorf("value is nil.")
+	}
+	return lm.updateValue(tid, k, v)
+}
+
 func (lm *logManager) deleteValue(tid TransactionID, k Key) error {
-	cm, ok := lm.currMutexes[tid]
-	if !ok {
-		return fmt.Errorf("transaction with ID %d is not currently running.", tid)
-	}
-	smv, err := lm.store.storeMapValue(k, false)
+	_, err := lm.store.storeMapValue(k, false)
 	if err != nil {
-		return fmt.Errorf("could not retrieve value: %v", err)
+		return err
 	}
-
-	// Delete key
-	rw := cm.getWrappedRWMutex(k, smv)
-	rw.wLock()
-	oldValue := CopyByteArray(smv.value)
-	var newValue []byte
-	delete(lm.store, k)
-
-	// Write log entry
-	lm.addLogEntry(&pb.LogEntry{
-		Tid:       proto.Int64(int64(tid)),
-		EntryType: pb.LogEntry_UPDATE.Enum(),
-		Key:       proto.String(string(k)),
-		OldValue:  oldValue,
-		NewValue:  newValue,
-	})
-
-	return nil
+	return lm.updateValue(tid, k, nil)
 }
 
 func (lm *logManager) commitTransaction(tid TransactionID) error {
@@ -410,7 +426,6 @@ func (lm *logManager) abortTransaction(tid TransactionID) (err error) {
 	})
 
 	// Undo updates (and write log entries)
-
 	entries := &lm.log.Entry
 	iterateEntries := (*entries)[:]
 iterate:
@@ -419,23 +434,16 @@ iterate:
 		if *e.Tid == int64(tid) {
 			switch *e.EntryType {
 			case pb.LogEntry_UPDATE: // Undo UPDATE records
-				k := Key(*e.Key)
-				smv, err := lm.store.storeMapValue(k, false)
-				if err != nil {
-					return fmt.Errorf("could not retrieve value: %v", err)
-				}
-				rw := cm.getWrappedRWMutex(k, smv)
+				oldValue, newValue, err := lm.updateStoreMapValue(cm, Key(*e.Key), Value(e.OldValue))
 				if err != nil {
 					return err
 				}
-				rw.wLock()
-				smv.value = CopyByteArray(e.OldValue)
 				lm.addLogEntry(&pb.LogEntry{
 					Tid:       proto.Int64(int64(tid)),
 					EntryType: pb.LogEntry_UNDO.Enum(),
 					Key:       e.Key,
-					OldValue:  e.NewValue,
-					NewValue:  e.OldValue,
+					OldValue:  oldValue, // e.NewValue
+					NewValue:  newValue, // e.OldValue
 					UndoLsn:   e.Lsn,
 				})
 			case pb.LogEntry_BEGIN: // Stop when BEGIN record is reached
