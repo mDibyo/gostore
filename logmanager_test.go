@@ -24,7 +24,7 @@ var (
 	sampleValue3 = Value([]byte{3, 4, 5, 6, 7})
 
 	// logManager variables and functions
-	testLogDir            string
+	testLogDir           string
 	newLogManagerForTest func(*testing.T) *logManager
 )
 
@@ -385,7 +385,7 @@ func TestAbortTransaction(t *testing.T) {
 			t.Error("found transaction in current mutexes map.")
 		}
 	}
-	checkStoreMapKey := func( k Key, v Value) {
+	checkStoreMapKey := func(k Key, v Value) {
 		gotSMV, ok := lm.store[k]
 		if v != nil { // key should exist
 			if !ok {

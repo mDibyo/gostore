@@ -1,8 +1,8 @@
 package gostore
 
 import (
-	"testing"
 	"bytes"
+	"testing"
 )
 
 func TestCopyByteArray(t *testing.T) {

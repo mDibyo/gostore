@@ -11,7 +11,9 @@ import (
 	"github.com/golang/protobuf/proto"
 	pb "github.com/mDibyo/gostore/pb"
 	"io/ioutil"
+	"math/rand"
 	"sync"
+	"time"
 )
 
 // Key represents a key in the store
@@ -78,7 +80,6 @@ type logManager struct {
 	logLock        sync.Mutex                          // lock to synchronize access to the log
 	nextLSN        int                                 // the LSN for the next log entry
 	nextLSNToFlush int                                 // the LSN of the next log entry to be flushed
-	nextTID        TransactionID                       // the Transaction ID for the next transaction
 	currMutexes    map[TransactionID]currentMutexesMap // the mutexes held currently by running transactions
 	store          storeMap                            // the master copy of the current state of the store
 }
@@ -192,8 +193,7 @@ func (lm *logManager) flushLog() error {
 }
 
 func (lm *logManager) nextTransactionID() TransactionID {
-	lm.nextTID++
-	return lm.nextTID - 1
+	return TransactionID(rand.Int63())
 }
 
 func (lm *logManager) beginTransaction(tid TransactionID) {
@@ -366,6 +366,8 @@ iterate:
 var lmInstance logManager
 
 func init() {
+	rand.Seed(time.Now().UnixNano())
+
 	logDir := flag.String("logDir", "", "the directory in which log files will be stored")
 	flag.Parse()
 	if lmInstancePtr, err := newLogManager(*logDir); err != nil {
