@@ -2,43 +2,9 @@ package gostore
 
 import (
 	"github.com/mDibyo/utils/queue"
-	"sync"
 )
 
-type rwMutex struct {
-	selfMutex  sync.Mutex
-	valueMutex sync.RWMutex
-	accessors  []TransactionID
-}
-
-func (rw *rwMutex) rLockedUnsafe() bool {
-	return len(rw.accessors) > 1
-}
-
-func (rw *rwMutex) wLockedUnsafe() bool {
-	return rw.accessors[0] != 0
-}
-
-func (rw *rwMutex) lockedUnsafe() bool {
-	return rw.rLockedUnsafe() || rw.wLockedUnsafe()
-}
-
 type doneChan chan struct{}
-
-type accessChan chan doneChan
-
-type connection struct {
-	tid TransactionID // ID for the transaction trying to connect
-	ac  accessChan    // the channel on which the transaction is listening
-}
-
-type rwAccessor struct {
-	rConnChan chan connection
-	wConnChan chan connection
-	ping      chan struct{}
-}
-
-type accessorHandler func(*rwAccessor, Key) bool
 
 func newDoneChan(outChan chan struct{}, counter *int) doneChan {
 	// TODO: Synchronize changing of counter
@@ -52,20 +18,36 @@ func newDoneChan(outChan chan struct{}, counter *int) doneChan {
 	return dc
 }
 
-func (rw *rwAccessor) setup() {
+type accessChan chan bool
+
+type conn struct {
+	tid TransactionID // ID for the transaction trying to connect
+	ac  accessChan    // the channel on which the transaction is listening
+	dc  doneChan      // the channel on which the transaction sends when done
+}
+
+type rwAccessor struct {
+	rConnChan chan *conn
+	wConnChan chan *conn
+	ping      chan struct{}
+}
+
+type accessorHandler func(*rwAccessor, Key) bool
+
+func (a *rwAccessor) lazySetup() {
 	select {
-	case <-rw.ping:
+	case <-a.ping:
 		return
 	default:
 	}
 
 	done := make(chan struct{})
 	numReaders, numWriters := 0, 0
-	rWaiters := []*connection{}
+	rWaiters := []*conn{}
 	wWaiters := queue.Queue{}
 	for {
 		select {
-		case rw.ping <- struct{}{}: // Ping to ensure this routine is ready.
+		case a.ping <- struct{}{}: // Ping to ensure this routine is ready.
 		case <-done: // Access closed. If possible, schedule new readers/writer.
 			if numWriters > 0 {
 				// Can not schedule new readers/writer.
@@ -75,109 +57,64 @@ func (rw *rwAccessor) setup() {
 			if wWaiters.Len() == 0 {
 				// No waiting writers. Schedule readers.
 				for _, rConn := range rWaiters {
-					rConn.ac <- newDoneChan(done, &numReaders)
+					rConn.dc = newDoneChan(done, &numReaders)
+					rConn.ac <- true
 				}
-				rWaiters = []*connection{}
+				rWaiters = []*conn{}
 			} else if numReaders == 0 {
 				wConn := wWaiters.Pop()
-				wConn.(*connection).ac <- newDoneChan(done, &numWriters)
+				wConn.(*conn).dc = newDoneChan(done, &numWriters)
+				wConn.(*conn).ac <- true
 			}
-		case newRConn := <-rw.rConnChan:
+		case newRConn := <-a.rConnChan:
 			// TODO: Perform deadlock detection
-			rWaiters = append(rWaiters, &newRConn)
-		case newWConn := <-rw.wConnChan:
+			rWaiters = append(rWaiters, newRConn)
+		case newWConn := <-a.wConnChan:
 			// TODO: Perform deadlock detection
 			wWaiters.Push(newWConn)
 		}
 	}
 }
 
-type heldMutexesMap map[Key]*rwMutex
+func (a *rwAccessor) RAccess(c *conn) bool {
+	a.lazySetup()
+	a.rConnChan <- c
+	return <-c.ac
+}
+
+func (a *rwAccessor) WAccess(c *conn) bool {
+	a.lazySetup()
+	a.wConnChan <- c
+	return <-c.ac
+}
+
+func (a *rwAccessor) Release(c *conn) {
+	c.dc <- struct{}{}
+}
 
 type heldAccessorsMap map[Key]*rwAccessor
 
+type heldConnsMap map[Key]*conn
+
 type LockManager struct {
-	mutexes       map[Key]rwMutex                    // mutexes for every key
 	accessors     map[Key]rwAccessor                 // accessors for each key
-	heldMutexes   map[TransactionID]heldMutexesMap   // mutexes for keys held by each transaction
 	heldAccessors map[TransactionID]heldAccessorsMap // accessors for keys held by each transaction
+	heldConns     map[TransactionID]heldConnsMap     // connections for keys held by each transaction
 }
 
 func NewLockManager() LockManager {
 	return LockManager{
-		make(map[Key]rwMutex),
 		make(map[Key]rwAccessor),
-		make(map[TransactionID]heldMutexesMap),
 		make(map[TransactionID]heldAccessorsMap),
+		make(map[TransactionID]heldConnsMap),
 	}
 }
 
-func (lm *LockManager) mutex(k Key) *rwMutex {
-	rw, ok := lm.mutexes[k]
+func (lm *LockManager) accessor(k Key) *rwAccessor {
+	a, ok := lm.accessors[k]
 	if !ok {
-		rw = rwMutex{}
-		lm.mutexes[k] = rw
+		a = rwAccessor{}
+		lm.accessors[k] = a
 	}
-	return &rw
-}
-
-// RLocked returns whether K is read-locked.
-func (lm *LockManager) RLocked(k Key) bool {
-	rw := lm.mutex(k)
-	rw.selfMutex.Lock()
-	defer rw.selfMutex.Unlock()
-	return rw.rLockedUnsafe()
-}
-
-// WLocked returns whether K is write-locked.
-func (lm *LockManager) WLocked(k Key) bool {
-	rw := lm.mutex(k)
-	rw.selfMutex.Lock()
-	defer rw.selfMutex.Unlock()
-	return rw.wLockedUnsafe()
-}
-
-// Locked returns whether K is locked at all.
-func (lm *LockManager) Locked(k Key) bool {
-	rw := lm.mutex(k)
-	rw.selfMutex.Lock()
-	defer rw.selfMutex.Unlock()
-	return rw.lockedUnsafe()
-}
-
-func (lm *LockManager) willDeadlockUnsafe(rw *rwMutex, k Key) bool {
-	if rw.lockedUnsafe() {
-		for _, a := range rw.accessors {
-			if a == 0 {
-				continue
-			}
-			hm := lm.heldMutexes[a]
-			for otherKey, otherRW := range hm {
-				if otherKey == k {
-					return true
-				}
-				otherRW.selfMutex.Lock()
-				if lm.willDeadlockUnsafe(otherRW, k) {
-					return true
-				}
-				otherRW.selfMutex.Unlock()
-			}
-		}
-	}
-	return false
-}
-
-// RLock read-locks K for Transaction with ID TID.
-func (lm *LockManager) RLock(tid TransactionID, k Key) bool {
-	rw := lm.mutex(k)
-
-	rw.selfMutex.Lock()
-	defer rw.selfMutex.Unlock()
-	if lm.willDeadlockUnsafe(rw, k) {
-		return false
-	}
-
-	rw.valueMutex.RLock()
-	rw.accessors = append(rw.accessors, tid)
-	return true
+	return &a
 }
