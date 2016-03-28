@@ -23,7 +23,7 @@ func (rw *rwMutex) lockedUnsafe() bool {
 	return rw.rLockedUnsafe() || rw.wLockedUnsafe()
 }
 
-type doneChan chan TransactionID
+type doneChan chan struct{}
 
 type accessChan chan doneChan
 
@@ -40,6 +40,18 @@ type rwAccessor struct {
 
 type accessorHandler func(*rwAccessor, Key) bool
 
+func newDoneChan(outChan chan struct{}, counter *int) doneChan {
+	// TODO: Synchronize changing of counter
+	*counter++
+	dc := make(doneChan)
+	go func() {
+		<-dc
+		*counter--
+		outChan <- struct{}{}
+	}()
+	return dc
+}
+
 func (rw *rwAccessor) setup() {
 	select {
 	case <-rw.ping:
@@ -48,15 +60,14 @@ func (rw *rwAccessor) setup() {
 	}
 
 	done := make(chan struct{})
-	writing := false
-	numReaders := 0
+	numReaders, numWriters := 0, 0
 	rWaiters := []*connection{}
 	wWaiters := queue.Queue{}
 	for {
 		select {
 		case rw.ping <- struct{}{}: // Ping to ensure this routine is ready.
 		case <-done: // Access closed. If possible, schedule new readers/writer.
-			if writing {
+			if numWriters > 0 {
 				// Can not schedule new readers/writer.
 				continue
 			}
@@ -64,19 +75,18 @@ func (rw *rwAccessor) setup() {
 			if wWaiters.Len() == 0 {
 				// No waiting writers. Schedule readers.
 				for _, rConn := range rWaiters {
-					numReaders++
-					// TODO: Set up accessChan
-					rConn.ac <- make(doneChan)
+					rConn.ac <- newDoneChan(done, &numReaders)
 				}
 				rWaiters = []*connection{}
 			} else if numReaders == 0 {
 				wConn := wWaiters.Pop()
-				// TODO: Set up accessChan
-				wConn.(*connection).ac <- make(doneChan)
+				wConn.(*connection).ac <- newDoneChan(done, &numWriters)
 			}
 		case newRConn := <-rw.rConnChan:
+			// TODO: Perform deadlock detection
 			rWaiters = append(rWaiters, &newRConn)
 		case newWConn := <-rw.wConnChan:
+			// TODO: Perform deadlock detection
 			wWaiters.Push(newWConn)
 		}
 	}
